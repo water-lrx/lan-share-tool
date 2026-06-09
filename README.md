@@ -1,5 +1,7 @@
 # LAN Share Tool
 
+[中文说明](README.zh-CN.md)
+
 A small macOS LAN sharing tool for quick file downloads and text exchange across devices on the same network.
 
 It starts a local HTTP download page, shows a QR code in a desktop control panel, keeps Chinese/Unicode file names readable, and includes a shared clipboard for moving text between your Mac and phone.
