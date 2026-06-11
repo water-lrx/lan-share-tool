@@ -95,6 +95,7 @@ def page_html
         .clip { padding: 14px; }
         .clip-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
         .clip-title { font-size: 17px; font-weight: 650; }
+        .upload-box { padding: 14px; }
         textarea { width: 100%; min-height: 118px; resize: vertical; border: 1px solid #d8dde6; border-radius: 6px; padding: 10px; font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5; }
         .clip-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
         button { appearance: none; border: 1px solid #d8dde6; border-radius: 6px; background: #fff; color: #202124; min-height: 38px; padding: 8px 12px; font: inherit; cursor: pointer; }
@@ -139,6 +140,16 @@ def page_html
             <button id="clearClip">清空</button>
           </div>
         </section>
+        <section class="panel upload-box">
+          <div class="clip-head">
+            <div class="clip-title">上传文件</div>
+            <div id="uploadStatus" class="toast"></div>
+          </div>
+          <input id="uploadFiles" type="file" multiple>
+          <div class="clip-actions">
+            <button class="primary" id="uploadButton">上传到共享文件夹</button>
+          </div>
+        </section>
         <section class="panel">
           <table>
             <thead><tr><th>文件名</th><th>大小</th><th>修改时间</th></tr></thead>
@@ -149,6 +160,7 @@ def page_html
       <script>
         const textBox = document.getElementById("clipText");
         const statusBox = document.getElementById("clipStatus");
+        const uploadStatus = document.getElementById("uploadStatus");
         const buttons = [...document.querySelectorAll("button")];
 
         function setStatus(text) {
@@ -211,6 +223,20 @@ def page_html
           }
           setStatus("已复制");
         }));
+
+        document.getElementById("uploadButton").addEventListener("click", () => withBusy(async () => {
+          const input = document.getElementById("uploadFiles");
+          if (!input.files.length) {
+            uploadStatus.textContent = "请先选择文件";
+            return;
+          }
+          const form = new FormData();
+          for (const file of input.files) form.append("files", file, file.name);
+          uploadStatus.textContent = "上传中...";
+          const data = await api("/upload", { method: "POST", body: form });
+          uploadStatus.textContent = `已上传 ${data.files.length} 个文件`;
+          setTimeout(() => location.reload(), 700);
+        }));
       </script>
     </body>
     </html>
@@ -231,6 +257,48 @@ def handle_clipboard(request, response)
   end
 rescue JSON::ParserError
   json_response(response, { error: "Invalid JSON" }, 400)
+end
+
+def safe_filename(name)
+  name = File.basename(name.to_s.dup.force_encoding("UTF-8").scrub("_"))
+  name = name.gsub(/[\/\\:\*\?\"\<\>\|]/, "_").strip
+  name.empty? ? "upload.bin" : name
+end
+
+def unique_upload_path(filename)
+  base = File.basename(filename, ".*")
+  ext = File.extname(filename)
+  path = File.join(SHARE_DIR, filename)
+  index = 1
+  while File.exist?(path)
+    path = File.join(SHARE_DIR, "#{base} (#{index})#{ext}")
+    index += 1
+  end
+  path
+end
+
+def handle_upload(request, response)
+  content_type = request["content-type"].to_s
+  unless content_type =~ /boundary=(?:"([^"]+)"|([^;]+))/
+    return json_response(response, { error: "Missing multipart boundary" }, 400)
+  end
+
+  boundary = Regexp.escape("--#{$1 || $2}")
+  body = request.body.to_s.b
+  saved = []
+  body.split(/#{boundary}(?:--)?\r\n/).each do |part|
+    next unless part.include?("filename=")
+    header, content = part.split("\r\n\r\n", 2)
+    next unless header && content
+    next unless header =~ /filename="([^"]*)"/
+
+    filename = safe_filename(CGI.unescapeHTML($1))
+    content = content.sub(/\r\n\z/, "")
+    path = unique_upload_path(filename)
+    File.binwrite(path, content.b)
+    saved << File.basename(path)
+  end
+  json_response(response, { files: saved })
 end
 
 def send_file_response(request, response)
@@ -268,6 +336,8 @@ server = WEBrick::HTTPServer.new(
 server.mount_proc("/") do |request, response|
   if request.path.start_with?("/download/")
     send_file_response(request, response)
+  elsif request.path == "/upload" && request.request_method == "POST"
+    handle_upload(request, response)
   elsif request.path == "/api/clipboard"
     handle_clipboard(request, response)
   else

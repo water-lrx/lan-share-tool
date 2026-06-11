@@ -13,8 +13,10 @@ It starts a local HTTP download page, shows a QR code in a desktop control panel
 - QR code for phones to scan the download page
 - UTF-8 file listing for Chinese and other Unicode file names
 - Shared text clipboard with save, copy, refresh, and clear actions
+- Web upload: visitors can upload files into the host share directory
 - Configurable share directory, sync source directory, and download port
 - macOS LaunchAgent support for login auto-start
+- Windows PowerShell version included in `windows/`
 - No Homebrew or npm dependencies required
 
 ## Requirements
@@ -172,6 +174,18 @@ The control panel lets you:
 - Manage the shared clipboard
 - Change the share directory, sync source directory, and download port
 
+## Upload Files
+
+The LAN download page includes an upload section. Anyone who can open the LAN URL can upload files into the host computer's share directory.
+
+If a filename already exists, LAN Share saves the upload with a suffix such as:
+
+```text
+name (1).ext
+```
+
+Only use this feature on trusted networks.
+
 ## Shared Clipboard
 
 Both the desktop control panel and the LAN download page include a shared clipboard.
@@ -184,6 +198,22 @@ Typical flow:
 4. Click `刷新`, then `复制文字`.
 
 The same works in the opposite direction.
+
+## Windows Version
+
+A Windows PowerShell version is available in:
+
+```text
+windows/
+```
+
+On Windows, double-click:
+
+```text
+windows/Start-LANShare.bat
+```
+
+It provides the same basic browser page: file downloads, uploads, and shared clipboard.
 
 ## Custom Settings From Shell
 
