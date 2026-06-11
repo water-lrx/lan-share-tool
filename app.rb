@@ -565,6 +565,7 @@ def html
               <button class="danger" data-action="stop">停止</button>
               <button data-action="openShare">打开文件夹</button>
               <button data-action="refresh">刷新</button>
+              <button class="danger" data-action="quitPanel">退出控制面板</button>
             </div>
 
             <h2 style="margin-top:20px;">设置</h2>
@@ -773,6 +774,10 @@ def html
             const data = await api(`/api/${name}`, { method: "POST" });
             $("log").textContent = data.output || "完成";
             toast(data.ok ? "完成" : "执行失败");
+            if (name === "quitPanel") {
+              document.body.innerHTML = '<div class="shell"><main class="panel"><h1>LAN Share 控制面板已退出</h1><p class="sub">文件共享服务不受影响。需要再次管理时，重新双击桌面的“文件共享.app”。</p></main></div>';
+              return;
+            }
             await refresh();
           } catch (error) {
             $("log").textContent = error.message;
@@ -861,6 +866,16 @@ server.mount_proc("/api/openShare") do |request, response|
   FileUtils.mkdir_p(dir)
   system("open", dir)
   json_response(response, { ok: true, output: "Opened #{dir}" })
+end
+
+server.mount_proc("/api/quitPanel") do |request, response|
+  next json_response(response, { ok: false, output: "Method not allowed" }, 405) unless request.request_method == "POST"
+
+  json_response(response, { ok: true, output: "Control panel is shutting down. File sharing remains available." })
+  Thread.new do
+    sleep 0.2
+    server.shutdown
+  end
 end
 
 server.mount_proc("/") do |request, response|
