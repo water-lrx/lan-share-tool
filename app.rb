@@ -6,6 +6,7 @@ require "fileutils"
 require "json"
 require "open3"
 require "pathname"
+require "timeout"
 require "webrick"
 
 ROOT = File.expand_path(__dir__)
@@ -52,12 +53,35 @@ def clipboard_file
   File.join(share_dir, ".lan-share-clipboard.txt")
 end
 
+def utf8_text(value)
+  value.to_s.dup.force_encoding("UTF-8").scrub
+end
+
 def run_script(command)
-  stdout, stderr, status = Open3.capture3("/bin/sh", SCRIPT, command)
+  stdout = ""
+  stderr = ""
+  status = nil
+  timed_out = false
+  begin
+    Timeout.timeout(8) do
+      stdout, stderr, status = Open3.capture3("/bin/sh", SCRIPT, command)
+    end
+  rescue Timeout::Error
+    timed_out = true
+  end
+  output = utf8_text([stdout, stderr].reject(&:empty?).join("\n").strip)
+  if timed_out
+    running = service_running?
+    return {
+      ok: running,
+      command: command,
+      output: running ? "Command is still finishing, but sharing service is running." : "Command timed out before the sharing service responded."
+    }
+  end
   {
-    ok: status.success?,
+    ok: status&.success?,
     command: command,
-    output: [stdout, stderr].reject(&:empty?).join("\n").strip
+    output: output
   }
 end
 
@@ -78,7 +102,8 @@ def share_files
   dir = share_dir
   return [] unless Dir.exist?(dir)
 
-  Dir.children(dir).sort.map do |name|
+  Dir.children(dir).sort.map do |raw_name|
+    name = utf8_text(raw_name)
     next if name == ".lan-share-clipboard.txt"
 
     path = File.join(dir, name)
@@ -167,8 +192,8 @@ def state
   port = share_port
   {
     running: service_running?,
-    share_dir: share_dir,
-    source_dir: source_dir,
+    share_dir: utf8_text(share_dir),
+    source_dir: utf8_text(source_dir),
     share_port: port,
     app_port: APP_PORT,
     urls: ips.map { |ip| "http://#{ip}:#{port}" },
