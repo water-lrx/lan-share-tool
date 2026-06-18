@@ -24,6 +24,35 @@ function UrlDecode($Text) {
   return [System.Net.WebUtility]::UrlDecode([string]$Text)
 }
 
+function Get-SafeRelativePath($Path) {
+  $text = ([string]$Path).Replace("\", "/")
+  $parts = @()
+  foreach ($part in $text.Split("/")) {
+    if ([string]::IsNullOrWhiteSpace($part) -or $part -eq "." -or $part -eq "..") { continue }
+    $parts += $part
+  }
+  return ($parts -join [System.IO.Path]::DirectorySeparatorChar)
+}
+
+function Get-SharePath($RelativePath) {
+  $relative = Get-SafeRelativePath $RelativePath
+  $root = [System.IO.Path]::GetFullPath($ShareDir)
+  $path = if ([string]::IsNullOrWhiteSpace($relative)) {
+    $root
+  } else {
+    [System.IO.Path]::GetFullPath((Join-Path $root $relative))
+  }
+  if ($path -ne $root -and -not $path.StartsWith($root + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return $null
+  }
+  return $path
+}
+
+function Join-UrlPath($Base, $Name) {
+  if ([string]::IsNullOrWhiteSpace($Base)) { return $Name }
+  return "$Base/$Name"
+}
+
 function Write-Response($Context, [int]$Status, [string]$ContentType, [byte[]]$Bytes) {
   $Context.Response.StatusCode = $Status
   $Context.Response.ContentType = $ContentType
@@ -96,7 +125,9 @@ function Set-ClipboardText($Text) {
   [System.IO.File]::WriteAllText((Get-ClipboardPath), [string]$Text, [System.Text.Encoding]::UTF8)
 }
 
-function Get-IndexHtml {
+function Get-IndexHtml($CurrentPath) {
+  $current = (Get-SafeRelativePath $CurrentPath).Replace("\", "/")
+  $currentDir = Get-SharePath $current
   $ips = Get-LocalIPv4
   $urls = if ($ips.Count -gt 0) {
     ($ips | ForEach-Object { "<code>http://$($_):$Port</code>" }) -join "<br>"
@@ -105,19 +136,33 @@ function Get-IndexHtml {
   }
 
   $rows = ""
-  Get-ChildItem -LiteralPath $ShareDir -Force | Where-Object { $_.Name -ne ".lan-share-clipboard.txt" } | Sort-Object Name | ForEach-Object {
-    $name = HtmlEncode $_.Name
-    $href = "/download?name=$(UrlEncode $_.Name)"
-    $size = if ($_.PSIsContainer) { "Folder" } else { Format-Size $_.Length }
-    $modified = $_.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
-    $rows += "<tr><td class='name'><a href='$href'>$name</a></td><td>$size</td><td>$modified</td></tr>"
+  if ($currentDir -and (Test-Path -LiteralPath $currentDir -PathType Container)) {
+    Get-ChildItem -LiteralPath $currentDir -Force | Where-Object { $_.Name -ne ".lan-share-clipboard.txt" } | Sort-Object Name | ForEach-Object {
+      $name = HtmlEncode $_.Name
+      $relative = (Join-UrlPath $current $_.Name)
+      $href = if ($_.PSIsContainer) { "/?path=$(UrlEncode $relative)" } else { "/download?name=$(UrlEncode $relative)" }
+      $prefix = if ($_.PSIsContainer) { "[dir] " } else { "" }
+      $size = if ($_.PSIsContainer) { "Folder" } else { Format-Size $_.Length }
+      $modified = $_.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
+      $rows += "<tr><td class='name'><a href='$href'>$prefix$name</a></td><td>$size</td><td>$modified</td></tr>"
+    }
   }
   if ([string]::IsNullOrWhiteSpace($rows)) {
-    $rows = "<tr><td colspan='3' class='empty'>No files yet.</td></tr>"
+    $message = if ($currentDir -and (Test-Path -LiteralPath $currentDir -PathType Container)) { "No files yet." } else { "Folder not found." }
+    $rows = "<tr><td colspan='3' class='empty'>$message</td></tr>"
   }
 
   $clip = HtmlEncode (Get-ClipboardText)
-  $dir = HtmlEncode $ShareDir
+  $displayPath = if ([string]::IsNullOrWhiteSpace($current)) { $ShareDir } else { Join-Path $ShareDir $current }
+  $dir = HtmlEncode $displayPath
+  $parentPath = ""
+  $back = ""
+  if (-not [string]::IsNullOrWhiteSpace($current)) {
+    $parentPath = Split-Path $current -Parent
+    $parentPath = $parentPath.Replace("\", "/")
+    $back = "<a class='back' href='/?path=$(UrlEncode $parentPath)'>Back to parent folder</a>"
+  }
+  $currentJson = $current | ConvertTo-Json -Compress
 
   return @"
 <!doctype html>
@@ -134,6 +179,7 @@ function Get-IndexHtml {
     .muted,.path { color:#5f6368; }
     .path { overflow-wrap:anywhere; font-family:ui-monospace,Consolas,monospace; font-size:13px; }
     .panel { background:#fff; border:1px solid #d8dde6; border-radius:8px; padding:16px; margin-top:16px; }
+    .back { display:inline-flex; align-items:center; min-height:32px; margin-top:8px; font-size:14px; }
     .links code { font-family:ui-monospace,Consolas,monospace; }
     textarea { width:100%; min-height:116px; resize:vertical; border:1px solid #d8dde6; border-radius:6px; padding:10px; font:14px/1.5 Consolas,monospace; box-sizing:border-box; }
     button,input[type=file]::file-selector-button { border:1px solid #d8dde6; border-radius:6px; background:#fff; color:#202124; min-height:38px; padding:8px 12px; font:inherit; cursor:pointer; }
@@ -153,6 +199,7 @@ function Get-IndexHtml {
 <main>
   <h1>LAN Share for Windows</h1>
   <div class="path">$dir</div>
+  $back
   <section class="panel links">
     <h2>Access URL</h2>
     $urls
@@ -218,7 +265,7 @@ async function uploadFiles() {
   const form = new FormData();
   for (const file of input.files) form.append('files', file, file.name);
   setText('uploadStatus', 'Uploading...');
-  const data = await api('/upload', { method:'POST', body:form });
+  const data = await api('/upload?path=' + encodeURIComponent($currentJson), { method:'POST', body:form });
   setText('uploadStatus', 'Uploaded ' + data.files.length + ' file(s). Refreshing...');
   setTimeout(() => location.reload(), 700);
 }
@@ -230,10 +277,8 @@ async function uploadFiles() {
 
 function Send-Download($Context) {
   $name = UrlDecode $Context.Request.QueryString["name"]
-  $safe = Get-SafeFileName $name
-  $path = [System.IO.Path]::GetFullPath((Join-Path $ShareDir $safe))
-  $root = [System.IO.Path]::GetFullPath($ShareDir)
-  if (-not $path.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
+  $path = Get-SharePath $name
+  if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) {
     Write-Text $Context 404 "text/plain; charset=utf-8" "Not found"
     return
   }
@@ -245,6 +290,12 @@ function Send-Download($Context) {
 }
 
 function Read-MultipartUpload($Context) {
+  $uploadDir = Get-SharePath (UrlDecode $Context.Request.QueryString["path"])
+  if (-not $uploadDir -or -not (Test-Path -LiteralPath $uploadDir -PathType Container)) {
+    Write-Text $Context 404 "text/plain; charset=utf-8" "Upload folder not found"
+    return
+  }
+
   $contentType = $Context.Request.ContentType
   if ($contentType -notmatch "boundary=(.+)$") {
     Write-Text $Context 400 "text/plain; charset=utf-8" "Missing multipart boundary"
@@ -265,7 +316,7 @@ function Read-MultipartUpload($Context) {
     $content = $content -replace "`r`n--$",""
     if ($content.EndsWith("`r`n")) { $content = $content.Substring(0, $content.Length - 2) }
     $fileName = Get-SafeFileName ([System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::GetEncoding("ISO-8859-1").GetBytes($rawName)))
-    $path = Get-UniquePath $ShareDir $fileName
+    $path = Get-UniquePath $uploadDir $fileName
     $bytes = [System.Text.Encoding]::GetEncoding("ISO-8859-1").GetBytes($content)
     [System.IO.File]::WriteAllBytes($path, $bytes)
     $saved += [System.IO.Path]::GetFileName($path)
@@ -317,7 +368,7 @@ try {
     try {
       $path = $context.Request.Url.AbsolutePath
       if ($path -eq "/") {
-        Write-Text $context 200 "text/html; charset=utf-8" (Get-IndexHtml)
+        Write-Text $context 200 "text/html; charset=utf-8" (Get-IndexHtml (UrlDecode $context.Request.QueryString["path"]))
       } elseif ($path -eq "/download") {
         Send-Download $context
       } elseif ($path -eq "/upload" -and $context.Request.HttpMethod -eq "POST") {

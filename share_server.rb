@@ -13,20 +13,46 @@ PORT = Integer(ENV.fetch("LAN_SHARE_PORT", "8000"))
 CLIPBOARD_FILE = File.join(SHARE_DIR, ".lan-share-clipboard.txt")
 MAX_CLIPBOARD_BYTES = 64 * 1024
 
-def file_rows
+def safe_relative_path(raw_path)
+  path = raw_path.to_s.force_encoding("UTF-8").scrub
+  path = path.tr("\\", "/")
+  parts = path.split("/").reject { |part| part.empty? || part == "." || part == ".." }
+  parts.join("/")
+end
+
+def safe_path(relative_path)
+  relative = safe_relative_path(relative_path)
+  root = File.expand_path(SHARE_DIR)
+  path = File.expand_path(File.join(root, relative))
+  return nil unless path == root || path.start_with?(root + File::SEPARATOR)
+
+  path
+end
+
+def query_param(request, key)
+  pair = URI.decode_www_form(request.query_string.to_s).find { |name, _value| name == key }
+  pair && pair[1]
+end
+
+def file_rows(current_path = "")
   return [] unless Dir.exist?(SHARE_DIR)
 
-  Dir.children(SHARE_DIR).sort.map do |raw_name|
+  directory = safe_path(current_path)
+  return [] unless directory && File.directory?(directory)
+
+  current = safe_relative_path(current_path)
+  Dir.children(directory).sort.map do |raw_name|
     name = raw_name.dup.force_encoding("UTF-8")
     next if name == ".lan-share-clipboard.txt"
 
-    path = File.join(SHARE_DIR, name)
+    relative = [current, name].reject(&:empty?).join("/")
+    path = File.join(directory, name)
     stat = File.stat(path)
     next if name == "." || name == ".."
 
     {
       name: name,
-      href: "/download/#{URI.encode_www_form_component(name)}",
+      href: stat.directory? ? "/?path=#{URI.encode_www_form_component(relative)}" : "/download/#{URI.encode_www_form_component(relative)}",
       directory: stat.directory?,
       size: stat.directory? ? "-" : format_size(stat.size),
       modified: stat.mtime.strftime("%Y-%m-%d %H:%M")
@@ -66,10 +92,17 @@ def format_size(bytes)
   unit.zero? ? "#{value.to_i} #{units[unit]}" : format("%.1f %s", value, units[unit])
 end
 
-def page_html
-  rows = file_rows
+def page_html(current_path = "")
+  current = safe_relative_path(current_path)
+  current_dir = safe_path(current)
+  rows = file_rows(current)
+  display_path = [SHARE_DIR, current].reject(&:empty?).join("/")
+  parent = File.dirname(current)
+  parent = "" if parent == "."
+  nav = current.empty? ? "" : "<a class=\"back\" href=\"/?path=#{URI.encode_www_form_component(parent)}\">返回上一级</a>"
   list = if rows.empty?
-           "<tr><td colspan=\"3\" class=\"empty\">共享目录里还没有文件</td></tr>"
+           message = current_dir && File.directory?(current_dir) ? "这个文件夹里还没有文件" : "文件夹不存在"
+           "<tr><td colspan=\"3\" class=\"empty\">#{message}</td></tr>"
          else
            rows.map do |file|
              name = CGI.escapeHTML(file[:name])
@@ -96,6 +129,7 @@ def page_html
         .clip-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; }
         .clip-title { font-size: 17px; font-weight: 650; }
         .upload-box { padding: 14px; }
+        .back { display: inline-flex; align-items: center; min-height: 32px; margin-top: 8px; font-size: 14px; }
         textarea { width: 100%; min-height: 118px; resize: vertical; border: 1px solid #d8dde6; border-radius: 6px; padding: 10px; font: 14px ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.5; }
         .clip-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
         button { appearance: none; border: 1px solid #d8dde6; border-radius: 6px; background: #fff; color: #202124; min-height: 38px; padding: 8px 12px; font: inherit; cursor: pointer; }
@@ -124,7 +158,8 @@ def page_html
         <header>
           <div>
             <h1>LAN Share Files</h1>
-            <div class="path">#{CGI.escapeHTML(SHARE_DIR)}</div>
+            <div class="path">#{CGI.escapeHTML(display_path)}</div>
+            #{nav}
           </div>
         </header>
         <section class="panel clip">
@@ -158,6 +193,7 @@ def page_html
         </section>
       </main>
       <script>
+        const currentPath = #{current.to_json};
         const textBox = document.getElementById("clipText");
         const statusBox = document.getElementById("clipStatus");
         const uploadStatus = document.getElementById("uploadStatus");
@@ -233,7 +269,8 @@ def page_html
           const form = new FormData();
           for (const file of input.files) form.append("files", file, file.name);
           uploadStatus.textContent = "上传中...";
-          const data = await api("/upload", { method: "POST", body: form });
+          const uploadUrl = `/upload?path=${encodeURIComponent(currentPath)}`;
+          const data = await api(uploadUrl, { method: "POST", body: form });
           uploadStatus.textContent = `已上传 ${data.files.length} 个文件`;
           setTimeout(() => location.reload(), 700);
         }));
@@ -265,19 +302,24 @@ def safe_filename(name)
   name.empty? ? "upload.bin" : name
 end
 
-def unique_upload_path(filename)
+def unique_upload_path(directory, filename)
   base = File.basename(filename, ".*")
   ext = File.extname(filename)
-  path = File.join(SHARE_DIR, filename)
+  path = File.join(directory, filename)
   index = 1
   while File.exist?(path)
-    path = File.join(SHARE_DIR, "#{base} (#{index})#{ext}")
+    path = File.join(directory, "#{base} (#{index})#{ext}")
     index += 1
   end
   path
 end
 
 def handle_upload(request, response)
+  upload_dir = safe_path(query_param(request, "path"))
+  unless upload_dir && File.directory?(upload_dir)
+    return json_response(response, { error: "Upload folder not found" }, 404)
+  end
+
   content_type = request["content-type"].to_s
   unless content_type =~ /boundary=(?:"([^"]+)"|([^;]+))/
     return json_response(response, { error: "Missing multipart boundary" }, 400)
@@ -294,7 +336,7 @@ def handle_upload(request, response)
 
     filename = safe_filename(CGI.unescapeHTML($1))
     content = content.sub(/\r\n\z/, "")
-    path = unique_upload_path(filename)
+    path = unique_upload_path(upload_dir, filename)
     File.binwrite(path, content.b)
     saved << File.basename(path)
   end
@@ -304,10 +346,9 @@ end
 def send_file_response(request, response)
   encoded = request.path.sub(%r{\A/download/}, "")
   name = URI.decode_www_form_component(encoded)
-  path = File.expand_path(File.join(SHARE_DIR, name))
-  root = File.expand_path(SHARE_DIR)
+  path = safe_path(name)
 
-  unless path == root || path.start_with?(root + File::SEPARATOR)
+  unless path
     response.status = 403
     response.body = "Forbidden"
     return
@@ -342,7 +383,7 @@ server.mount_proc("/") do |request, response|
     handle_clipboard(request, response)
   else
     response["Content-Type"] = "text/html; charset=utf-8"
-    response.body = page_html
+    response.body = page_html(query_param(request, "path"))
   end
 end
 

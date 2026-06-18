@@ -33,7 +33,9 @@ Default port:
 
 ## Upload Files
 
-The web page has an Upload Files section. Anyone who can open the LAN URL can upload files into the host computer's share directory.
+The web page has an Upload Files section. Anyone who can open the LAN URL can upload files into the currently opened share folder.
+
+Folders can be opened from the file list, so files inside subfolders can also be downloaded.
 
 If an uploaded filename already exists, the script automatically saves it as:
 

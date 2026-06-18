@@ -9,6 +9,7 @@ It starts a local HTTP download page, shows a QR code in a desktop control panel
 ## Features
 
 - Browser-based file sharing over your local network
+- Folder browsing, including files inside subfolders
 - Desktop control panel at `http://127.0.0.1:7999`
 - QR code for phones to scan the download page
 - UTF-8 file listing for Chinese and other Unicode file names
@@ -176,7 +177,7 @@ The control panel lets you:
 
 ## Upload Files
 
-The LAN download page includes an upload section. Anyone who can open the LAN URL can upload files into the host computer's share directory.
+The LAN download page includes an upload section. Anyone who can open the LAN URL can upload files into the currently opened share folder.
 
 If a filename already exists, LAN Share saves the upload with a suffix such as:
 
