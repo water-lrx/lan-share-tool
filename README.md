@@ -10,6 +10,7 @@ It starts a local HTTP download page, shows a QR code in a desktop control panel
 
 - Browser-based file sharing over your local network
 - Folder browsing, including files inside subfolders
+- Folder downloads as `.zip` archives
 - Desktop control panel at `http://127.0.0.1:7999`
 - QR code for phones to scan the download page
 - UTF-8 file listing for Chinese and other Unicode file names
@@ -186,6 +187,10 @@ name (1).ext
 ```
 
 Only use this feature on trusted networks.
+
+## Download Folders
+
+Folders can be opened from the file list, and each folder also has a download link. Folder downloads are created as temporary `.zip` archives and then sent to the browser.
 
 ## Shared Clipboard
 

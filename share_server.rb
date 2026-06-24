@@ -4,6 +4,7 @@
 require "cgi"
 require "fileutils"
 require "json"
+require "tempfile"
 require "time"
 require "uri"
 require "webrick"
@@ -53,6 +54,7 @@ def file_rows(current_path = "")
     {
       name: name,
       href: stat.directory? ? "/?path=#{URI.encode_www_form_component(relative)}" : "/download/#{URI.encode_www_form_component(relative)}",
+      folder_download_href: stat.directory? ? "/download-folder/#{URI.encode_www_form_component(relative)}" : nil,
       directory: stat.directory?,
       size: stat.directory? ? "-" : format_size(stat.size),
       modified: stat.mtime.strftime("%Y-%m-%d %H:%M")
@@ -107,7 +109,8 @@ def page_html(current_path = "")
            rows.map do |file|
              name = CGI.escapeHTML(file[:name])
              prefix = file[:directory] ? "[dir] " : ""
-             "<tr><td class=\"name\"><a href=\"#{file[:href]}\">#{prefix}#{name}</a></td><td>#{file[:size]}</td><td>#{file[:modified]}</td></tr>"
+             action = file[:folder_download_href] ? " <a class=\"folder-download\" href=\"#{file[:folder_download_href]}\">下载</a>" : ""
+             "<tr><td class=\"name\"><a href=\"#{file[:href]}\">#{prefix}#{name}</a>#{action}</td><td>#{file[:size]}</td><td>#{file[:modified]}</td></tr>"
            end.join
          end
 
@@ -141,6 +144,7 @@ def page_html(current_path = "")
         th { color: #5f6368; font-size: 12px; font-weight: 600; }
         tr:last-child td { border-bottom: 0; }
         .name { width: 58%; overflow-wrap: anywhere; }
+        .folder-download { display: inline-flex; align-items: center; min-height: 28px; margin-left: 10px; font-size: 13px; }
         a { color: #1a73e8; text-decoration: none; }
         a:hover { text-decoration: underline; }
         .empty { color: #5f6368; text-align: center; padding: 28px; }
@@ -365,6 +369,58 @@ def send_file_response(request, response)
   response.body = File.binread(path)
 end
 
+def send_folder_response(request, response)
+  encoded = request.path.sub(%r{\A/download-folder/}, "")
+  name = safe_relative_path(URI.decode_www_form_component(encoded))
+  path = safe_path(name)
+
+  unless path && File.directory?(path)
+    response.status = 404
+    response.body = "Not found"
+    return
+  end
+
+  zip_name = "#{File.basename(path)}.zip"
+  Tempfile.create(["lan-share-folder-", ".zip"]) do |zip|
+    zip.close
+    FileUtils.rm_f(zip.path)
+    py_zip = <<~PY
+      import os
+      import sys
+      import zipfile
+
+      source, target = sys.argv[1], sys.argv[2]
+      root_name = os.path.basename(source.rstrip(os.sep))
+      with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
+          archive.write(source, root_name)
+          for current, dirs, files in os.walk(source):
+              dirs.sort()
+              files.sort()
+              for dirname in dirs:
+                  full_path = os.path.join(current, dirname)
+                  rel_path = os.path.relpath(full_path, os.path.dirname(source))
+                  archive.write(full_path, rel_path)
+              for filename in files:
+                  full_path = os.path.join(current, filename)
+                  rel_path = os.path.relpath(full_path, os.path.dirname(source))
+                  archive.write(full_path, rel_path)
+    PY
+    ok = system("python3", "-c", py_zip, path, zip.path)
+    ok ||= system("ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", path, zip.path)
+    unless ok && File.file?(zip.path)
+      response.status = 500
+      response.body = "Failed to create zip"
+      return
+    end
+
+    response["Content-Type"] = "application/zip"
+    response["Content-Disposition"] = %(attachment; filename="#{CGI.escape(zip_name)}"; filename*=UTF-8''#{URI.encode_www_form_component(zip_name)})
+    response.body = File.binread(zip.path)
+  ensure
+    FileUtils.rm_f(zip.path)
+  end
+end
+
 FileUtils.mkdir_p(SHARE_DIR)
 
 server = WEBrick::HTTPServer.new(
@@ -377,6 +433,8 @@ server = WEBrick::HTTPServer.new(
 server.mount_proc("/") do |request, response|
   if request.path.start_with?("/download/")
     send_file_response(request, response)
+  elsif request.path.start_with?("/download-folder/")
+    send_folder_response(request, response)
   elsif request.path == "/upload" && request.request_method == "POST"
     handle_upload(request, response)
   elsif request.path == "/api/clipboard"

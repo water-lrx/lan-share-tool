@@ -110,7 +110,10 @@ clear_logs() {
 }
 
 is_running() {
-  curl -fsS --max-time 1 "http://127.0.0.1:$PORT/" >/dev/null 2>&1
+  for host in $(ip_addresses) 127.0.0.1; do
+    curl -fsS --max-time 1 "http://$host:$PORT/" 2>/dev/null | grep 'LAN Share Files' >/dev/null 2>&1 && return 0
+  done
+  return 1
 }
 
 wait_until_running() {

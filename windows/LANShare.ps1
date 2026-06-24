@@ -141,10 +141,11 @@ function Get-IndexHtml($CurrentPath) {
       $name = HtmlEncode $_.Name
       $relative = (Join-UrlPath $current $_.Name)
       $href = if ($_.PSIsContainer) { "/?path=$(UrlEncode $relative)" } else { "/download?name=$(UrlEncode $relative)" }
+      $download = if ($_.PSIsContainer) { " <a class='folder-download' href='/download-folder?name=$(UrlEncode $relative)'>Download</a>" } else { "" }
       $prefix = if ($_.PSIsContainer) { "[dir] " } else { "" }
       $size = if ($_.PSIsContainer) { "Folder" } else { Format-Size $_.Length }
       $modified = $_.LastWriteTime.ToString("yyyy-MM-dd HH:mm")
-      $rows += "<tr><td class='name'><a href='$href'>$prefix$name</a></td><td>$size</td><td>$modified</td></tr>"
+      $rows += "<tr><td class='name'><a href='$href'>$prefix$name</a>$download</td><td>$size</td><td>$modified</td></tr>"
     }
   }
   if ([string]::IsNullOrWhiteSpace($rows)) {
@@ -189,6 +190,7 @@ function Get-IndexHtml($CurrentPath) {
     th,td { padding:10px 8px; border-bottom:1px solid #d8dde6; text-align:left; vertical-align:top; }
     th { color:#5f6368; font-size:12px; }
     .name { overflow-wrap:anywhere; }
+    .folder-download { display:inline-flex; align-items:center; min-height:28px; margin-left:10px; font-size:13px; }
     .empty { color:#5f6368; text-align:center; padding:24px; }
     a { color:#1a73e8; text-decoration:none; }
     a:hover { text-decoration:underline; }
@@ -289,6 +291,30 @@ function Send-Download($Context) {
   Write-Response $Context 200 "application/octet-stream" $bytes
 }
 
+function Send-FolderDownload($Context) {
+  $name = UrlDecode $Context.Request.QueryString["name"]
+  $path = Get-SharePath $name
+  if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Container)) {
+    Write-Text $Context 404 "text/plain; charset=utf-8" "Not found"
+    return
+  }
+
+  $folderName = [System.IO.Path]::GetFileName($path)
+  $zipName = "$folderName.zip"
+  $tempZip = Join-Path ([System.IO.Path]::GetTempPath()) ("lan-share-" + [System.Guid]::NewGuid().ToString() + ".zip")
+  try {
+    Compress-Archive -LiteralPath $path -DestinationPath $tempZip -Force
+    $bytes = [System.IO.File]::ReadAllBytes($tempZip)
+    $Context.Response.ContentType = "application/zip"
+    $Context.Response.Headers["Content-Disposition"] = "attachment; filename*=UTF-8''$(UrlEncode $zipName)"
+    Write-Response $Context 200 "application/zip" $bytes
+  } finally {
+    if (Test-Path -LiteralPath $tempZip) {
+      Remove-Item -LiteralPath $tempZip -Force
+    }
+  }
+}
+
 function Read-MultipartUpload($Context) {
   $uploadDir = Get-SharePath (UrlDecode $Context.Request.QueryString["path"])
   if (-not $uploadDir -or -not (Test-Path -LiteralPath $uploadDir -PathType Container)) {
@@ -371,6 +397,8 @@ try {
         Write-Text $context 200 "text/html; charset=utf-8" (Get-IndexHtml (UrlDecode $context.Request.QueryString["path"]))
       } elseif ($path -eq "/download") {
         Send-Download $context
+      } elseif ($path -eq "/download-folder") {
+        Send-FolderDownload $context
       } elseif ($path -eq "/upload" -and $context.Request.HttpMethod -eq "POST") {
         Read-MultipartUpload $context
       } elseif ($path -eq "/api/clipboard") {
