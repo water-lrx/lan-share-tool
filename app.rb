@@ -93,9 +93,13 @@ def lan_ips
   end.compact.uniq
 end
 
+def lan_share_response?(host, port)
+  stdout, _stderr, status = Open3.capture3("curl", "-fsS", "--max-time", "1", "http://#{host}:#{port}/")
+  status.success? && stdout.include?("LAN Share Files")
+end
+
 def service_running?
-  system("curl", "-fsS", "--max-time", "1", "http://127.0.0.1:#{share_port}/",
-         out: File::NULL, err: File::NULL)
+  ([*lan_ips, "127.0.0.1"].uniq).any? { |host| lan_share_response?(host, share_port) }
 end
 
 def share_files

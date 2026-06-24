@@ -98,6 +98,40 @@ bootout() {
   launchctl bootout "gui/$(uid)" "$PLIST" 2>/dev/null || true
 }
 
+share_server_pids() {
+  ps -axo pid=,command= | while IFS= read -r line; do
+    pid="${line%% *}"
+    command_line="${line#"$pid"}"
+    command_line="${command_line# }"
+    case "$pid:$command_line" in
+      *"$SERVER_SCRIPT"*|*"$TOOL_DIR/share_server.rb"*)
+        echo "$pid"
+        ;;
+    esac
+  done
+}
+
+stop_share_processes() {
+  pids="$(share_server_pids)"
+  [ -n "$pids" ] || return 0
+
+  echo "$pids" | while IFS= read -r pid; do
+    kill "$pid" 2>/dev/null || true
+  done
+
+  tries=0
+  while [ "$tries" -lt 10 ] && [ -n "$(share_server_pids)" ]; do
+    tries=$((tries + 1))
+    sleep 0.2
+  done
+
+  remaining="$(share_server_pids)"
+  [ -n "$remaining" ] || return 0
+  echo "$remaining" | while IFS= read -r pid; do
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+}
+
 bootstrap() {
   launchctl bootstrap "gui/$(uid)" "$PLIST"
   launchctl enable "gui/$(uid)/$LABEL"
@@ -128,6 +162,18 @@ wait_until_running() {
   return 1
 }
 
+wait_until_stopped() {
+  tries=0
+  while [ "$tries" -lt 20 ]; do
+    if ! is_running; then
+      return 0
+    fi
+    tries=$((tries + 1))
+    sleep 0.25
+  done
+  return 1
+}
+
 sync_files() {
   ensure_share_dir
   if [ ! -d "$SOURCE_DIR" ]; then
@@ -154,6 +200,8 @@ start_service() {
 
 stop_service() {
   bootout
+  stop_share_processes
+  wait_until_stopped || true
   echo "Stopped $LABEL"
 }
 
